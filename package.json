@@ -1,5 +1,5 @@
 {
-  "name": "@gnani/web-voice-hook",
+  "name": "@gnani.ai/web-voice-hook",
   "version": "0.0.2",
   "description": "React hook for real-time bidirectional WebSocket voice (STT/TTS)",
   "main": "dist/index.js",
