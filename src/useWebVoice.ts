@@ -62,6 +62,7 @@ export const useWebSocketAudio = ({
   const websocketRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const isPlayingRef = useRef(false);
   const isFirstChunk = useRef(true);
   const streamRef = useRef<MediaStream>();
@@ -369,6 +370,7 @@ export const useWebSocketAudio = ({
       const source = audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioContext.destination);
+      activeSourcesRef.current.push(source);
 
       // Initialize the AudioMotionAnalyzer with the AudioBufferSourceNode
       initializeVisualizer(source);
@@ -397,6 +399,9 @@ export const useWebSocketAudio = ({
       pendingSourcesRef.current += 1;
 
       source.onended = () => {
+        activeSourcesRef.current = activeSourcesRef.current.filter(
+          (node) => node !== source
+        );
         pendingSourcesRef.current = Math.max(0, pendingSourcesRef.current - 1);
 
         if (
@@ -430,6 +435,54 @@ export const useWebSocketAudio = ({
     }
   }, [getOrCreateAudioContext, initializeVisualizer]);
 
+  const destroyAnalyzer = useCallback(() => {
+    if (!analyzerRef.current) return;
+    try {
+      analyzerRef.current.stop();
+    } catch {
+      // Ignore stop errors for already-stopped analyzer
+    }
+    try {
+      analyzerRef.current.destroy();
+    } catch (error) {
+      logger.error('Failed to destroy analyzer:', error);
+    } finally {
+      analyzerRef.current = null;
+    }
+  }, []);
+
+  const stopAllPlayback = useCallback(() => {
+    audioBufferRef.current = [];
+    nextPlayTimeRef.current = 0;
+    pendingSourcesRef.current = 0;
+    isPlayingAudio.current = false;
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+
+    activeSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // Ignore stop errors for already-ended sources
+      }
+      source.disconnect();
+    });
+    activeSourcesRef.current = [];
+    sourceNodeRef.current = null;
+
+    if (lastSentTTSEvent.current) {
+      websocketRef.current?.send(
+        JSON.stringify({
+          event: 'TTS_PLAYING',
+          media: {
+            tts_playing: false,
+          },
+        })
+      );
+      lastSentTTSEvent.current = false;
+    }
+  }, []);
+
   const processAudioMessage = useCallback(
     async (message: ISocketEventData) => {
       try {
@@ -442,7 +495,7 @@ export const useWebSocketAudio = ({
           processAudioChunk(message.media.payload);
         } else if (['barge', 'BARGE'].includes(message.event)) {
           logger.info('Barged');
-          audioBufferRef.current = [];
+          stopAllPlayback();
         } else if (message.event === 'EOC') {
           logger.info('EOC event occurred');
           websocketRef.current?.send(JSON.stringify({ event: 'EOC' }));
@@ -461,7 +514,7 @@ export const useWebSocketAudio = ({
         logger.error('Error processing audio message:', error);
       }
     },
-    [playNextChunk, processAudioChunk]
+    [playNextChunk, processAudioChunk, stopAllPlayback]
   );
 
   const cleanup = useCallback(
@@ -489,8 +542,7 @@ export const useWebSocketAudio = ({
         websocketRef.current = null;
       }
 
-      analyzerRef.current?.stop();
-      analyzerRef.current?.destroy();
+      destroyAnalyzer();
 
       // Clean up audio context
       if (audioContextRef.current) {
@@ -503,6 +555,17 @@ export const useWebSocketAudio = ({
         sourceNodeRef.current.stop();
         sourceNodeRef.current.disconnect();
         sourceNodeRef.current = null;
+      }
+      if (activeSourcesRef.current.length > 0) {
+        activeSourcesRef.current.forEach((source) => {
+          try {
+            source.stop();
+          } catch {
+            // Ignore stop errors for already-ended sources
+          }
+          source.disconnect();
+        });
+        activeSourcesRef.current = [];
       }
 
       // Clean up media stream - Enhanced cleanup
@@ -533,7 +596,7 @@ export const useWebSocketAudio = ({
       // Only call onClose if it wasn't already cleaned up
       onClose?.(source);
     },
-    [stopProcessing, onClose]
+    [stopProcessing, onClose, destroyAnalyzer]
   );
 
   const connect = useCallback(() => {
@@ -689,12 +752,20 @@ export const useWebSocketAudio = ({
         sourceNodeRef.current = null;
       }
 
-      // Clean up analyzer
-      if (analyzerRef.current) {
-        analyzerRef.current.stop();
-        analyzerRef.current.destroy();
-        analyzerRef.current = null;
+      if (activeSourcesRef.current.length > 0) {
+        activeSourcesRef.current.forEach((source) => {
+          try {
+            source.stop();
+          } catch {
+            // Ignore stop errors for already-ended sources
+          }
+          source.disconnect();
+        });
+        activeSourcesRef.current = [];
       }
+
+      // Clean up analyzer
+      destroyAnalyzer();
 
       // Clean up media stream
       if (streamRef.current) {
@@ -809,6 +880,7 @@ export const useWebSocketAudio = ({
       startProcessing,
       stopProcessing,
       cleanup,
+      destroyAnalyzer,
     ]
   );
 
