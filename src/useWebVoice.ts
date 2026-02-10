@@ -7,11 +7,11 @@
  * @see README.md for setup (worklet path, peer deps) and usage examples.
  */
 
-import AudioMotionAnalyzer from 'audiomotion-analyzer';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import AudioMotionAnalyzer from "audiomotion-analyzer";
+import { useCallback, useMemo, useRef, useState } from "react";
 
-import { audioProcessorSource } from './audioProcessorSource.generated';
-import type { ISocketEventData, IUseWebVoiceOptions } from './webVoice';
+import { audioProcessorSource } from "./audioProcessorSource.generated";
+import type { ISocketEventData, IUseWebVoiceOptions } from "./webVoice";
 import {
   applyCustomColor,
   base64ToPCM16Data,
@@ -20,7 +20,7 @@ import {
   getVisualizerOptions,
   resampleAudio,
   resetAudioInput,
-} from './webVoiceUtils';
+} from "./webVoiceUtils";
 
 /** Default sample rate for capture and playback (Hz). */
 const SAMPLE_RATE = 44100;
@@ -31,10 +31,10 @@ export const BITS_PER_SAMPLE = 16;
 const defaultLogger = {
   info: (arg: unknown, ...args: unknown[]) =>
     // eslint-disable-next-line no-console
-    console.log('[GnaniWebVoice]', arg, ...args),
+    console.log("[GnaniWebVoice]", arg, ...args),
   error: (arg: unknown, ...args: unknown[]) =>
     // eslint-disable-next-line no-console
-    console.error('[GnaniWebVoice]', arg, ...args),
+    console.error("[GnaniWebVoice]", arg, ...args),
 };
 
 /**
@@ -82,20 +82,24 @@ export const useWebSocketAudio = ({
   const isPlayingAudio = useRef(false);
 
   const BUFFER_DURATION = 1; // Buffer duration in seconds
+  const INITIAL_BUFFER_DURATION = 0.15; // Faster start for short utterances
+  const IDLE_FLUSH_DELAY_MS = 500; // Play whatever is buffered after idle
   const bufferSize = SAMPLE_RATE * CHANNELS * BUFFER_DURATION; // Calculate buffer size based on sample rate and channels
+  const initialBufferSize = SAMPLE_RATE * CHANNELS * INITIAL_BUFFER_DURATION;
 
   const audioBufferRef = useRef<Float32Array[]>([]);
+  const idleFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Create a single AudioContext instance
   const getOrCreateAudioContext = useCallback(() => {
     if (
       !audioContextRef.current ||
-      audioContextRef.current.state === 'closed'
+      audioContextRef.current.state === "closed"
     ) {
       audioContextRef.current = new (window.AudioContext ||
         (window as any).webkitAudioContext)({
         sampleRate: SAMPLE_RATE,
-        latencyHint: 'playback',
+        latencyHint: "playback",
       });
     }
     return audioContextRef.current;
@@ -172,7 +176,7 @@ export const useWebSocketAudio = ({
 
       isAudioNodesConnected.current = true;
     } catch (e) {
-      logger.error('Error setting up audio stream:', e);
+      logger.error("Error setting up audio stream:", e);
       onException?.(e as unknown as Error);
       throw e;
     }
@@ -189,11 +193,11 @@ export const useWebSocketAudio = ({
         const audioContext = getOrCreateAudioContext();
 
         // Load the Audio Worklet: use embedded (Blob URL) when workletPath omitted, else fetch from URL
-        const useEmbedded = workletPath === undefined || workletPath === '';
+        const useEmbedded = workletPath === undefined || workletPath === "";
         const workletUrl = useEmbedded
           ? URL.createObjectURL(
               new Blob([audioProcessorSource], {
-                type: 'application/javascript',
+                type: "application/javascript",
               })
             )
           : workletPath;
@@ -209,7 +213,7 @@ export const useWebSocketAudio = ({
 
         audioWorkletNode = new AudioWorkletNode(
           audioContext,
-          'audio-processor',
+          "audio-processor",
           {
             numberOfInputs: 1,
             numberOfOutputs: 1,
@@ -228,7 +232,7 @@ export const useWebSocketAudio = ({
 
             websocketRef.current.send(
               JSON.stringify({
-                event: 'media',
+                event: "media",
                 media: {
                   payload: base64Data,
                   timestamp,
@@ -240,7 +244,7 @@ export const useWebSocketAudio = ({
 
         sourceNode.connect(audioWorkletNode);
       } catch (error) {
-        logger.error('Failed to start audio processing:', error);
+        logger.error("Failed to start audio processing:", error);
         onException?.(error as unknown as Error);
       }
     };
@@ -285,21 +289,32 @@ export const useWebSocketAudio = ({
 
         audioBufferRef.current.push(rightSampled);
 
-         // Start playback if we have enough data
-         const totalBufferedSamples = audioBufferRef.current.reduce(
+        // Start playback if we have enough data
+        const totalBufferedSamples = audioBufferRef.current.reduce(
           (acc, chunk) => acc + chunk.length,
           0
         );
 
+        const requiredBufferSize = isFirstChunk.current
+          ? initialBufferSize
+          : bufferSize;
+
         if (
-          totalBufferedSamples >= bufferSize ||
+          totalBufferedSamples >= requiredBufferSize ||
           isPlayingAudio.current ||
           (isStopReceived.current && totalBufferedSamples > 0)
         ) {
           playNextChunk();
+        } else if (!idleFlushTimerRef.current) {
+          idleFlushTimerRef.current = setTimeout(() => {
+            idleFlushTimerRef.current = null;
+            if (audioBufferRef.current.length > 0) {
+              playNextChunk();
+            }
+          }, IDLE_FLUSH_DELAY_MS);
         }
       } catch (error) {
-        logger.error('Error processing audio chunk:', error);
+        logger.error("Error processing audio chunk:", error);
       }
     },
     [getOrCreateAudioContext]
@@ -309,18 +324,34 @@ export const useWebSocketAudio = ({
     const audioContext = getOrCreateAudioContext();
     if (!audioContext) return;
 
+    if (idleFlushTimerRef.current) {
+      clearTimeout(idleFlushTimerRef.current);
+      idleFlushTimerRef.current = null;
+    }
+
     const getBufferedSamples = () =>
       audioBufferRef.current.reduce((acc, chunk) => acc + chunk.length, 0);
 
     let bufferedSamples = getBufferedSamples();
+    const requiredBufferSize = isFirstChunk.current
+      ? initialBufferSize
+      : bufferSize;
     const shouldPlayRemainder = isStopReceived.current && bufferedSamples > 0;
 
     // Ensure we have enough buffer before starting playback
     if (
       !isPlayingAudio.current &&
-      bufferedSamples < bufferSize &&
+      bufferedSamples < requiredBufferSize &&
       !shouldPlayRemainder
     ) {
+      if (!idleFlushTimerRef.current) {
+        idleFlushTimerRef.current = setTimeout(() => {
+          idleFlushTimerRef.current = null;
+          if (audioBufferRef.current.length > 0) {
+            playNextChunk();
+          }
+        }, IDLE_FLUSH_DELAY_MS);
+      }
       return;
     }
 
@@ -329,7 +360,7 @@ export const useWebSocketAudio = ({
       if (
         !shouldPlayRemainder &&
         !isPlayingAudio.current &&
-        bufferedSamples < bufferSize
+        bufferedSamples < requiredBufferSize
       ) {
         break;
       }
@@ -385,7 +416,7 @@ export const useWebSocketAudio = ({
       if (!lastSentTTSEvent.current) {
         websocketRef.current?.send(
           JSON.stringify({
-            event: 'TTS_PLAYING',
+            event: "TTS_PLAYING",
             media: {
               tts_playing: true,
             },
@@ -412,7 +443,7 @@ export const useWebSocketAudio = ({
           setIsPlaying(false);
           websocketRef.current?.send(
             JSON.stringify({
-              event: 'TTS_PLAYING',
+              event: "TTS_PLAYING",
               media: {
                 tts_playing: false,
               },
@@ -430,6 +461,7 @@ export const useWebSocketAudio = ({
       nextPlayTimeRef.current = startTime + audioBuffer.duration;
       sourceNodeRef.current = source;
       isPlayingRef.current = true;
+      isFirstChunk.current = false;
 
       bufferedSamples -= totalLength;
     }
@@ -445,13 +477,17 @@ export const useWebSocketAudio = ({
     try {
       analyzerRef.current.destroy();
     } catch (error) {
-      logger.error('Failed to destroy analyzer:', error);
+      logger.error("Failed to destroy analyzer:", error);
     } finally {
       analyzerRef.current = null;
     }
   }, []);
 
   const stopAllPlayback = useCallback(() => {
+    if (idleFlushTimerRef.current) {
+      clearTimeout(idleFlushTimerRef.current);
+      idleFlushTimerRef.current = null;
+    }
     audioBufferRef.current = [];
     nextPlayTimeRef.current = 0;
     pendingSourcesRef.current = 0;
@@ -473,7 +509,7 @@ export const useWebSocketAudio = ({
     if (lastSentTTSEvent.current) {
       websocketRef.current?.send(
         JSON.stringify({
-          event: 'TTS_PLAYING',
+          event: "TTS_PLAYING",
           media: {
             tts_playing: false,
           },
@@ -486,21 +522,21 @@ export const useWebSocketAudio = ({
   const processAudioMessage = useCallback(
     async (message: ISocketEventData) => {
       try {
-        if (message.event === 'media' && message.media?.payload) {
+        if (message.event === "media" && message.media?.payload) {
           if (chunkReceivedAt.current === 0) {
             chunkReceivedAt.current = Date.now();
-            logger.info('Chunk received at:', chunkReceivedAt.current);
+            logger.info("Chunk received at:", chunkReceivedAt.current);
           }
           backendSampleRate.current = message.sample_rate ?? SAMPLE_RATE;
           processAudioChunk(message.media.payload);
-        } else if (['barge', 'BARGE'].includes(message.event)) {
-          logger.info('Barged');
+        } else if (["barge", "BARGE"].includes(message.event)) {
+          logger.info("Barged");
           stopAllPlayback();
-        } else if (message.event === 'EOC') {
-          logger.info('EOC event occurred');
-          websocketRef.current?.send(JSON.stringify({ event: 'EOC' }));
-        } else if (message.event === 'stop') {
-          logger.info('Stop event occurred');
+        } else if (message.event === "EOC") {
+          logger.info("EOC event occurred");
+          websocketRef.current?.send(JSON.stringify({ event: "EOC" }));
+        } else if (message.event === "stop") {
+          logger.info("Stop event occurred");
           if (websocketRef.current?.readyState === WebSocket.OPEN) {
             isStopReceived.current = true;
           }
@@ -508,17 +544,17 @@ export const useWebSocketAudio = ({
             playNextChunk();
           }
         } else {
-          logger.info('Unhandled message type:', message);
+          logger.info("Unhandled message type:", message);
         }
       } catch (error) {
-        logger.error('Error processing audio message:', error);
+        logger.error("Error processing audio message:", error);
       }
     },
     [playNextChunk, processAudioChunk, stopAllPlayback]
   );
 
   const cleanup = useCallback(
-    (source: 'server' | 'client') => {
+    (source: "server" | "client") => {
       if (isCleanedUp.current) return;
       isCleanedUp.current = true;
 
@@ -580,6 +616,10 @@ export const useWebSocketAudio = ({
       }
 
       // Reset all buffers and states
+      if (idleFlushTimerRef.current) {
+        clearTimeout(idleFlushTimerRef.current);
+        idleFlushTimerRef.current = null;
+      }
       audioBufferRef.current = [];
       isPlayingRef.current = false;
       isAudioNodesConnected.current = false;
@@ -626,7 +666,7 @@ export const useWebSocketAudio = ({
 
       websocketRef.current?.send(
         JSON.stringify({
-          event: 'ping',
+          event: "ping",
           metadata: { timestamp: Date.now().toString() },
         })
       );
@@ -650,7 +690,7 @@ export const useWebSocketAudio = ({
         }
         websocketRef.current?.send(
           JSON.stringify({
-            event: 'ping',
+            event: "ping",
             metadata: { timestamp: Date.now().toString() },
           })
         );
@@ -658,7 +698,7 @@ export const useWebSocketAudio = ({
 
       await setupAudioStream();
       await startProcessing();
-      ws.send(JSON.stringify({ event: 'start' }));
+      ws.send(JSON.stringify({ event: "start" }));
     };
 
     ws.onmessage = (event) => {
@@ -669,7 +709,7 @@ export const useWebSocketAudio = ({
           processAudioMessage(data);
         }
       } catch (error) {
-        logger.error('Error parsing websocket message:', error);
+        logger.error("Error parsing websocket message:", error);
       }
     };
 
@@ -680,24 +720,24 @@ export const useWebSocketAudio = ({
       }
 
       const reason = e.reason;
-      if (reason === 'LINK_EXPIRED') {
-        logger.info('Link expired');
+      if (reason === "LINK_EXPIRED") {
+        logger.info("Link expired");
         location.reload();
       }
       // Only trigger cleanup if it wasn't manually initiated
       if (!isCleanedUp.current) {
-        cleanup('server');
+        cleanup("server");
       }
       // Stop processing audio when WebSocket closes
       stopProcessing(); // Ensure audio processing stops
     };
 
     ws.onerror = (error) => {
-      logger.error('WebSocket error:', error);
+      logger.error("WebSocket error:", error);
       onException?.(error as unknown as Error);
       // Ensure we're not in a cleanup state before triggering another cleanup
       if (!isCleanedUp.current) {
-        cleanup('server');
+        cleanup("server");
       }
     };
   }, [
@@ -711,7 +751,7 @@ export const useWebSocketAudio = ({
   ]);
 
   const disconnect = useCallback(() => {
-    cleanup('client');
+    cleanup("client");
   }, [cleanup]);
 
   const reconnect = useCallback(
@@ -737,6 +777,10 @@ export const useWebSocketAudio = ({
       setIsPlaying(false);
 
       // Clear audio buffer
+      if (idleFlushTimerRef.current) {
+        clearTimeout(idleFlushTimerRef.current);
+        idleFlushTimerRef.current = null;
+      }
       audioBufferRef.current = [];
 
       // Clean up audio context if it exists
@@ -783,7 +827,7 @@ export const useWebSocketAudio = ({
 
       // Now create a new connection
       if (!websocketUrl) {
-        logger.error('Cannot reconnect: websocketUrl is required');
+        logger.error("Cannot reconnect: websocketUrl is required");
         return;
       }
 
@@ -797,7 +841,6 @@ export const useWebSocketAudio = ({
           return;
         }
         setIsConnected(true);
-
 
         // Clear any existing ping interval before starting a new one
         if (pingIntervalRef.current) {
@@ -818,7 +861,7 @@ export const useWebSocketAudio = ({
           }
           websocketRef.current?.send(
             JSON.stringify({
-              event: 'ping',
+              event: "ping",
               metadata: { timestamp: Date.now().toString() },
             })
           );
@@ -826,7 +869,7 @@ export const useWebSocketAudio = ({
 
         await setupAudioStream();
         await startProcessing();
-        ws.send(JSON.stringify({ event: 'start' }));
+        ws.send(JSON.stringify({ event: "start" }));
         onConnectionSuccess?.();
       };
 
@@ -838,7 +881,7 @@ export const useWebSocketAudio = ({
             processAudioMessage(data);
           }
         } catch (error) {
-          logger.error('Error parsing websocket message:', error);
+          logger.error("Error parsing websocket message:", error);
           onException?.(error as unknown as Error);
         }
       };
@@ -850,24 +893,24 @@ export const useWebSocketAudio = ({
         }
 
         const reason = e.reason;
-        if (reason === 'LINK_EXPIRED') {
-          logger.info('Link expired');
+        if (reason === "LINK_EXPIRED") {
+          logger.info("Link expired");
           location.reload();
         }
         // Only trigger cleanup if it wasn't manually initiated
         if (!isCleanedUp.current) {
-          cleanup('server');
+          cleanup("server");
         }
         // Stop processing audio when WebSocket closes
         stopProcessing();
       };
 
       ws.onerror = (error) => {
-        logger.error('WebSocket error:', error);
+        logger.error("WebSocket error:", error);
         onException?.(error as unknown as Error);
         // Ensure we're not in a cleanup state before triggering another cleanup
         if (!isCleanedUp.current) {
-          cleanup('server');
+          cleanup("server");
         }
       };
     },

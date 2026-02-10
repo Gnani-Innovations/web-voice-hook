@@ -6,7 +6,7 @@
  *
  * @see README.md for setup (worklet path, peer deps) and usage examples.
  */
-import type { IUseWebVoiceOptions } from './webVoice';
+import type { IUseWebVoiceOptions } from "./webVoice";
 export declare const CHANNELS = 1;
 export declare const BITS_PER_SAMPLE = 16;
 /**
