@@ -1,5 +1,5 @@
 /**
- * Audio Worklet: captures mic input and posts 400ms chunks to the main thread.
+ * Audio Worklet: captures mic input and posts 50ms chunks to the main thread.
  * Must be served from a path reachable by the app (e.g. public/worklet/audio-processor.js).
  * Main thread sends base64 µ-law over WebSocket (see useWebVoice.ts).
  */
@@ -7,7 +7,7 @@ class AudioProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const { sampleRate = 44100 } = options.processorOptions ?? {};
-    this.bufferSize = Math.floor((sampleRate * 400) / 1000);
+    this.bufferSize = Math.floor((sampleRate * 50) / 1000);
     this.buffer = new Float32Array(this.bufferSize);
     this.bufferIndex = 0;
   }

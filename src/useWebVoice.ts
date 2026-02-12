@@ -81,7 +81,7 @@ export const useWebSocketAudio = ({
   const [isConnected, setIsConnected] = useState(false);
   const isPlayingAudio = useRef(false);
 
-  const BUFFER_DURATION = 1; // Buffer duration in seconds
+  const BUFFER_DURATION = 0.001; // Buffer duration in seconds
   const INITIAL_BUFFER_DURATION = 0.15; // Faster start for short utterances
   const IDLE_FLUSH_DELAY_MS = 500; // Play whatever is buffered after idle
   const bufferSize = SAMPLE_RATE * CHANNELS * BUFFER_DURATION; // Calculate buffer size based on sample rate and channels
